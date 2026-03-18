@@ -1,3 +1,5 @@
+![magenta orb icon](assets/icon_512x512.png)
+
 # magenta-orb-desktop
 
 Прозрачное desktop-приложение с процедурной анимацией orb на `Electron + Three.js`.
