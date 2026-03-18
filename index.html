@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Magenta Orb Viewer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      body {
+        -webkit-app-region: drag;
+        user-select: none;
+        cursor: grab;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        background: transparent;
+      }
+
+      .hint {
+        position: fixed;
+        left: 18px;
+        bottom: 16px;
+        color: rgba(255, 212, 232, 0.22);
+        font:
+          10px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Display',
+          sans-serif;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        pointer-events: none;
+        text-shadow: 0 0 10px rgba(255, 89, 157, 0.12);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="hint">Esc close • Cmd/Ctrl+Shift+T pin</div>
+    <script type="module">
+      import * as THREE from './node_modules/three/build/three.module.js'
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: 'high-performance',
+      })
+      renderer.setPixelRatio(Math.min((window.devicePixelRatio || 1) * 1.5, 4))
+      renderer.setSize(window.innerWidth, window.innerHeight)
+      renderer.setClearColor(0x000000, 0)
+      renderer.outputColorSpace = THREE.SRGBColorSpace
+      document.body.prepend(renderer.domElement)
+
+      const scene = new THREE.Scene()
+      const camera = new THREE.PerspectiveCamera(28, window.innerWidth / window.innerHeight, 0.1, 100)
+      camera.position.z = 5.4
+
+      const config = {
+        latSegments: 84,
+        lonSegments: 132,
+        radius: 0.94,
+        pointSize: 50,
+      }
+
+      const pointCount = config.latSegments * config.lonSegments
+      const geometry = new THREE.BufferGeometry()
+      const positions = new Float32Array(pointCount * 3)
+      const colors = new Float32Array(pointCount * 3)
+      const sizes = new Float32Array(pointCount)
+      const spherical = new Float32Array(pointCount * 2)
+      const random = new Float32Array(pointCount)
+
+      let index = 0
+      for (let y = 0; y < config.latSegments; y += 1) {
+        const v = (y + 0.5) / config.latSegments
+        for (let x = 0; x < config.lonSegments; x += 1) {
+          const u = x / config.lonSegments
+          spherical[index * 2] = u
+          spherical[index * 2 + 1] = v
+          random[index] = Math.random()
+          index += 1
+        }
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage))
+      geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage))
+      geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1).setUsage(THREE.DynamicDrawUsage))
+
+      const coreMaterial = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+        uniforms: {
+          uPixelRatio: { value: Math.min((window.devicePixelRatio || 1) * 1.5, 4) },
+          uBaseSize: { value: config.pointSize },
+        },
+        vertexShader: `
+          precision highp float;
+          uniform float uPixelRatio;
+          uniform float uBaseSize;
+          attribute float aSize;
+          attribute vec3 aColor;
+          varying vec3 vColor;
+          void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
+            gl_PointSize = uBaseSize * aSize * uPixelRatio * (1.0 / max(0.9, -mvPosition.z));
+            vColor = aColor;
+          }
+        `,
+        fragmentShader: `
+          precision highp float;
+          varying vec3 vColor;
+          void main() {
+            vec2 uv = gl_PointCoord - 0.5;
+            float dist = length(uv);
+            float core = smoothstep(0.1, 0.0, dist);
+            float edge = smoothstep(0.18, 0.02, dist);
+            float alpha = core * 1.15 + edge * 0.35;
+            if (alpha < 0.02) discard;
+            gl_FragColor = vec4(vColor, alpha);
+          }
+        `,
+      })
+
+      const glowMaterial = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uPixelRatio: { value: Math.min((window.devicePixelRatio || 1) * 1.5, 4) },
+          uBaseSize: { value: config.pointSize * 3 },
+        },
+        vertexShader: `
+          precision highp float;
+          uniform float uPixelRatio;
+          uniform float uBaseSize;
+          attribute float aSize;
+          attribute vec3 aColor;
+          varying vec3 vColor;
+          void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
+            gl_PointSize = uBaseSize * aSize * uPixelRatio * (1.0 / max(0.9, -mvPosition.z));
+            vColor = aColor;
+          }
+        `,
+        fragmentShader: `
+          precision highp float;
+          varying vec3 vColor;
+          void main() {
+            vec2 uv = gl_PointCoord - 0.5;
+            float dist = length(uv);
+            float glow = smoothstep(0.22, 0.0, dist);
+            float halo = smoothstep(0.38, 0.08, dist);
+            float alpha = glow * 0.12 + halo * 0.05;
+            if (alpha < 0.01) discard;
+            gl_FragColor = vec4(vColor, alpha);
+          }
+        `,
+      })
+
+      const glowMesh = new THREE.Points(geometry, glowMaterial)
+      const coreMesh = new THREE.Points(geometry, coreMaterial)
+      scene.add(glowMesh)
+      scene.add(coreMesh)
+
+      function smoothstep(edge0, edge1, x) {
+        const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1)
+        return t * t * (3 - 2 * t)
+      }
+
+      function mix(a, b, t) {
+        return a + (b - a) * t
+      }
+
+      function rotateXY(x, y, angle) {
+        const s = Math.sin(angle)
+        const c = Math.cos(angle)
+        return [x * c - y * s, x * s + y * c]
+      }
+
+      function rotateXZ(x, z, angle) {
+        const s = Math.sin(angle)
+        const c = Math.cos(angle)
+        return [x * c - z * s, x * s + z * c]
+      }
+
+      function rotateYZ(y, z, angle) {
+        const s = Math.sin(angle)
+        const c = Math.cos(angle)
+        return [y * c - z * s, y * s + z * c]
+      }
+
+      function animate(now) {
+        const rawTime = now * 0.001
+        const t = rawTime * 0.62
+
+        for (let i = 0; i < pointCount; i += 1) {
+          const u = spherical[i * 2]
+          const v = spherical[i * 2 + 1]
+          const seed = random[i]
+          const phi = (u - 0.5) * Math.PI * 2
+          const theta = v * Math.PI
+
+          const dirX = Math.sin(theta) * Math.cos(phi)
+          const dirY = Math.cos(theta)
+          const dirZ = Math.sin(theta) * Math.sin(phi)
+
+          let flowAX = dirX
+          let flowAY = dirY
+          let flowAZ = dirZ
+          ;[flowAX, flowAZ] = rotateXZ(flowAX, flowAZ, 0.34 * Math.sin(t * 0.72))
+          ;[flowAX, flowAY] = rotateXY(flowAX, flowAY, 0.22 * Math.cos(t * 0.46))
+
+          let flowBX = dirX
+          let flowBY = dirY
+          let flowBZ = dirZ
+          ;[flowBY, flowBZ] = rotateYZ(flowBY, flowBZ, t * 0.64 + dirX * 0.24)
+          ;[flowBX, flowBZ] = rotateXZ(flowBX, flowBZ, 0.16 * Math.sin(t * 0.7 + dirY * 2.2))
+
+          const ringSweep = Math.exp(-((flowAX * 0.9 + flowAY * 0.3 - 0.38 * Math.sin(t * 0.68)) ** 2) / 0.022)
+          const ribbonShape = flowBZ - 0.14 * Math.sin(flowBX * 4.6 + t * 1.9)
+          const ribbon = Math.exp(-(ribbonShape ** 2) / 0.03) * smoothstep(-0.95, 0.55, flowBX)
+          const loopA = Math.exp(-((Math.hypot(flowBX + 0.18 * Math.sin(t * 0.72), flowBY - 0.14 * Math.cos(t * 0.56)) - 0.27) ** 2) / 0.018)
+          const loopB = Math.exp(-((Math.hypot(flowAZ - 0.22 * Math.cos(t * 0.48), flowAY + 0.13 * Math.sin(t * 0.68)) - 0.19) ** 2) / 0.014)
+          const band = Math.min(1, Math.max(ringSweep, ribbon, loopA, loopB))
+
+          const latWave = Math.sin(v * Math.PI * 7 - t * 1.52 + Math.sin(u * Math.PI * 4)) * 0.018
+          const swirlWave = Math.sin((u - v) * Math.PI * 12 + t * 2.05 + seed * 10) * 0.008
+          const pulse = 0.5 + 0.5 * Math.sin(t * 0.68 + seed * 12)
+
+          let radius = 1 + latWave * 0.64 + swirlWave * 0.52 + band * 0.05 + loopA * 0.034 + loopB * 0.026
+          radius = Math.min(Math.max(radius, 0.972), 1.064)
+
+          let px = dirX * radius
+          let py = dirY * radius
+          let pz = dirZ * radius
+
+          ;[px, pz] = rotateXZ(px, pz, (0.08 + band * 0.08) * Math.sin(t * 0.78 + dirY * 2.2))
+          ;[px, py] = rotateXY(px, py, (0.05 + loopA * 0.09) * Math.cos(t * 0.6 + dirZ * 1.8))
+
+          const shellPush = ribbon * 0.006 + loopA * 0.009 + loopB * 0.008
+          px += dirX * shellPush
+          py += dirY * shellPush
+          pz += dirZ * shellPush
+
+          positions[i * 3] = px * config.radius
+          positions[i * 3 + 1] = py * config.radius
+          positions[i * 3 + 2] = pz * config.radius
+
+          const front = smoothstep(-0.9, 0.65, dirZ)
+          const shell = smoothstep(0.972, 1.0, radius) * 0.54 + 0.28
+          const energy = mix(0.46, 1.0, band) * (0.86 + pulse * 0.16) * shell
+          const baseT = Math.min(Math.max(shell * 0.42 + band * 0.9 + front * 0.16, 0), 1)
+          const accentT = Math.min(Math.max(shell * 0.2 + band * 0.36 + pulse * 0.12, 0), 1)
+
+          let r = mix(255, 255, baseT)
+          let g = mix(78, 150, baseT)
+          let b = mix(122, 196, baseT)
+
+          r = mix(r, 255, accentT)
+          g = mix(g, 220, accentT * 0.42)
+          b = mix(b, 240, accentT * 0.38)
+
+          colors[i * 3] = (r / 255) * energy
+          colors[i * 3 + 1] = (g / 255) * energy
+          colors[i * 3 + 2] = (b / 255) * energy
+          sizes[i] = mix(1.06, 1.34, band) + front * 0.1 + pulse * 0.08
+        }
+
+        geometry.attributes.position.needsUpdate = true
+        geometry.attributes.aColor.needsUpdate = true
+        geometry.attributes.aSize.needsUpdate = true
+        geometry.computeBoundingSphere()
+
+        glowMesh.rotation.y = rawTime * 0.12
+        glowMesh.rotation.x = Math.sin(rawTime * 0.19) * 0.05
+        glowMesh.rotation.z = Math.cos(rawTime * 0.14) * 0.03
+        coreMesh.rotation.y = glowMesh.rotation.y
+        coreMesh.rotation.x = glowMesh.rotation.x
+        coreMesh.rotation.z = glowMesh.rotation.z
+
+        renderer.render(scene, camera)
+        requestAnimationFrame(animate)
+      }
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight
+        camera.updateProjectionMatrix()
+        const nextPixelRatio = Math.min((window.devicePixelRatio || 1) * 1.5, 4)
+        renderer.setPixelRatio(nextPixelRatio)
+        renderer.setSize(window.innerWidth, window.innerHeight)
+        coreMaterial.uniforms.uPixelRatio.value = nextPixelRatio
+        glowMaterial.uniforms.uPixelRatio.value = nextPixelRatio
+      })
+
+      requestAnimationFrame(animate)
+    </script>
+  </body>
+</html>
